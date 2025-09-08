@@ -96,7 +96,7 @@ class Aircraft:
 
 @dataclass
 class SimulationConfig:
-    lambda_per_min: float = 0.1         # probabilidad de arribo por minuto
+    lambda_per_min: float = 0.1         # probabilidad de arribo por minuto # !!!! punto 2?? Por lo tanto λ (por minuto) = 1 avión / 60 minutos = 1/60 ≈ 0.0166666667.
     windy_day: bool = False             # si True, cada avión tiene 0.1 de interrupción (go-around)
     closure_window: Optional[Tuple[int,int]] = None  # (t_start, t_end) minutos donde no se puede aterrizar
     seed: Optional[int] = None
