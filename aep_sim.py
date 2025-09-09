@@ -110,6 +110,7 @@ class SimulationResult:
     go_arounds: int
     timeline_landings: List[int]  # minutos de aterrizaje
     aircraft_log: List[Aircraft]  # estado final de cada avión
+    congestion_time: int = 0
 
 class AEPSimulator:
     def __init__(self, config: SimulationConfig):
@@ -124,6 +125,7 @@ class AEPSimulator:
         self.timeline_landings: List[int] = []
         self.diverted_count = 0
         self.go_around_events = 0
+        self.congestion_time = 0
 
     # ---------------------------
     # Proceso de arribos (Bernoulli por minuto)
@@ -278,6 +280,17 @@ class AEPSimulator:
         # 6) Gestionar go-arounds y posibles reinserciones
         self.handle_go_around(minute)
 
+        # 7) Calcular congestión: al menos un avión en approach volando más lento que su velocidad máxima
+        congested = False
+        for a in self.aircrafts:
+            if a.status == "approach":
+                vmax = desired_speed_max_for_distance_nm(a.distance_nm)
+                if a.speed_kt < vmax - 1e-6:
+                    congested = True
+                    break
+        if congested:
+            self.congestion_time += 1
+
     # ---------------------------
     # Correr la simulación completa
     # ---------------------------
@@ -304,7 +317,8 @@ class AEPSimulator:
             delays=delays,
             go_arounds=self.go_around_events,
             timeline_landings=self.timeline_landings,
-            aircraft_log=self.aircrafts
+            aircraft_log=self.aircrafts,
+            congestion_time=self.congestion_time
         )
 
 # ---------------------------
