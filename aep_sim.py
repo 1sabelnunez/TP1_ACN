@@ -48,6 +48,9 @@ RUNWAY_TARGET_GAP = 5        # objetivo operativo (buffer)
 REJOIN_REQUIRED_GAP = 10     # gap requerido para reinsertarse tras go-around
 GO_AROUND_SPEED_KT = 200     # velocidad durante alejamiento
 MIN_REJOIN_DISTANCE_NM = 5   # para reinsertarse, estar > 5 mn de AEP
+MAX_GO_AROUND_TIME_MIN = 25  # tiempo máximo tolerado en go-around antes de desviar
+DIVERT_DISTANCE_NM = 110     # si supera esta distancia en nm, se desvía
+CLOSURE_FORCE_GO_AROUND_DISTANCE_NM = 10  # durante cierre, forzar go-around dentro de este radio
 
 # Bandas de distancia y velocidades (min, max) en nudos
 # Usamos los máximos como "desired speed" en camino despejado.
@@ -86,6 +89,9 @@ class Aircraft:
     needs_interruption: bool = False
     # Para rejoin simple
     rejoining: bool = False
+    # Tracking adicional para control de desvíos y reintentos
+    go_around_start_minute: Optional[int] = None
+    go_around_attempts: int = 0
 
     def eta_minutes(self) -> float:
         """ETA al umbral asumiendo mantener speed_kt constante. (Aproximado)"""
@@ -172,9 +178,12 @@ class AEPSimulator:
                 if foll.eta_minutes() - eta_lead < (RUNWAY_TARGET_GAP):
                     # Sigue muy cerca: empujará más abajo del mínimo -> go-around
                     # Regla: si target == vmin y aún no se logra el buffer, ir a go-around
-                    if foll.speed_kt <= vmin + 1e-6:
+                    if foll.speed_kt <= vmin + 1e-6 and foll.status != "go_around":
                         foll.status = "go_around"
                         foll.speed_kt = GO_AROUND_SPEED_KT
+                        if foll.go_around_start_minute is None:
+                            foll.go_around_start_minute = minute
+                        foll.go_around_attempts += 1
                         self.go_around_events += 1
 
             else:
@@ -192,31 +201,65 @@ class AEPSimulator:
     def handle_go_around(self, minute: int):
         """
         Política simple: cuando un avión entra en go-around, se aleja (distance aumenta).
-        Podrá reinsertarse cuando:
-          - su ETA calculada con velocidad deseada daría un aterrizaje ≥ last_landing + 10
-          - y su distancia sea > 5 nm
-        Si no logra reinserción antes de salirse del radar (>100 nm), se desvía a Montevideo.
+        Nueva política de reinserción:
+          - Comparar ETA del que quiere reinsertarse contra TODA la cola de approach.
+          - Requerir hueco de al menos REJOIN_REQUIRED_GAP tanto con el anterior como el siguiente.
+          - Reinsertar solo si la pista está abierta y la distancia es > MIN_REJOIN_DISTANCE_NM.
+        Desvío:
+          - Si supera DIVERT_DISTANCE_NM o sobrepasa MAX_GO_AROUND_TIME_MIN o excede intentos, se desvía.
         """
-        for a in self.aircrafts:
-            if a.status == "go_around":
-                a.go_around_count += 0  # contadores si se desean por evento único
-                # Condición de rejoin
-                desired = desired_speed_max_for_distance_nm(a.distance_nm)
-                eta = a.distance_nm / max(1e-6, desired) * 60.0
-                ok_gap = True
-                if self.last_landing_minute is not None:
-                    ok_gap = (minute + eta) >= (self.last_landing_minute + REJOIN_REQUIRED_GAP)
-                far_enough = a.distance_nm >= MIN_REJOIN_DISTANCE_NM
-                if ok_gap and far_enough:
-                    a.status = "approach"  # reinsertado
-                    a.speed_kt = desired
-                    continue
+        # Precalcular ETAs de la cola actual en approach
+        approaching = [b for b in self.aircrafts if b.status == "approach"]
+        etas_approach = []
+        for b in approaching:
+            v_des_b = desired_speed_max_for_distance_nm(b.distance_nm)
+            eta_b = minute + (b.distance_nm / max(1e-6, v_des_b) * 60.0)
+            etas_approach.append((eta_b, b.id))
+        etas_approach.sort(key=lambda x: x[0])
 
-                # Si se fue más allá de 120 nm (salió del área), lo consideramos desvío a Montevideo
-                if a.distance_nm > 120.0:
-                    a.status = "diverted"
-                    a.diverted = True
-                    self.diverted_count += 1
+        for a in self.aircrafts:
+            if a.status != "go_around":
+                continue
+
+            # Criterios de desvío por distancia/tiempo/intentros
+            too_far = a.distance_nm > DIVERT_DISTANCE_NM
+            too_long = (a.go_around_start_minute is not None) and (minute - a.go_around_start_minute > MAX_GO_AROUND_TIME_MIN)
+            too_many = a.go_around_attempts >= 2
+            if too_far or too_long or too_many:
+                a.status = "diverted"
+                a.diverted = True
+                self.diverted_count += 1
+                continue
+
+            # Condiciones de reinserción segura
+            v_des = desired_speed_max_for_distance_nm(a.distance_nm)
+            eta_a = minute + (a.distance_nm / max(1e-6, v_des) * 60.0)
+            far_enough = a.distance_nm >= MIN_REJOIN_DISTANCE_NM
+
+            ok_gap = True
+            # Si la pista está cerrada, bloquear reinserción
+            if self.runway_closed(minute):
+                ok_gap = False
+            else:
+                if etas_approach:
+                    idx = 0
+                    while idx < len(etas_approach) and etas_approach[idx][0] < eta_a:
+                        idx += 1
+                    # vecino anterior
+                    if idx - 1 >= 0:
+                        prev_eta = etas_approach[idx-1][0]
+                        if eta_a - prev_eta < REJOIN_REQUIRED_GAP:
+                            ok_gap = False
+                    # vecino siguiente
+                    if idx < len(etas_approach):
+                        next_eta = etas_approach[idx][0]
+                        if next_eta - eta_a < REJOIN_REQUIRED_GAP:
+                            ok_gap = False
+
+            if ok_gap and far_enough:
+                a.status = "approach"  # reinsertado
+                a.speed_kt = v_des
+                # no tocar go_around_start_minute; los intentos quedan registrados
 
     # ---------------------------
     # Cierre del aeropuerto (no se puede aterrizar)
@@ -249,6 +292,17 @@ class AEPSimulator:
                     # go-around: se aleja (aumenta distancia)
                     a.distance_nm = a.distance_nm + delta_nm
 
+        # 3b) Si la pista está cerrada, forzar go-around a los que estén cerca del umbral
+        if self.runway_closed(minute):
+            for a in self.aircrafts:
+                if a.status == "approach" and 0.0 < a.distance_nm <= CLOSURE_FORCE_GO_AROUND_DISTANCE_NM:
+                    a.status = "go_around"
+                    a.speed_kt = GO_AROUND_SPEED_KT
+                    if a.go_around_start_minute is None:
+                        a.go_around_start_minute = minute
+                    a.go_around_attempts += 1
+                    self.go_around_events += 1
+
         # 4) Aterrizajes (si distancia llegó a 0, y pista abierta y separación respetada)
         #    Procesamos en orden de menor distancia (candidatos a aterrizar)
         if not self.runway_closed(minute):
@@ -275,6 +329,9 @@ class AEPSimulator:
                     a.status = "go_around"
                     a.speed_kt = GO_AROUND_SPEED_KT
                     a.needs_interruption = False
+                    if a.go_around_start_minute is None:
+                        a.go_around_start_minute = minute
+                    a.go_around_attempts += 1
                     self.go_around_events += 1
 
         # 6) Gestionar go-arounds y posibles reinserciones
