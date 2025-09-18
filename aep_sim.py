@@ -290,7 +290,8 @@ class AEPSimulator:
                     a.distance_nm = max(0.0, a.distance_nm - delta_nm)
                 else:
                     # go-around: se aleja (aumenta distancia)
-                    a.distance_nm = a.distance_nm + delta_nm
+                    #a.distance_nm = a.distance_nm + delta_nm
+                    pass
 
         # 3b) Si la pista está cerrada, forzar go-around a los que estén cerca del umbral
         if self.runway_closed(minute):
