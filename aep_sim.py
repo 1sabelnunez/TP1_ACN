@@ -8,21 +8,7 @@ Simulador AEP - TP1 ACN 2025
 Se basa en técnicas vistas en clase (numpy.random, Monte Carlo, visualizaciones con matplotlib).
 Modelo discreto en pasos de 1 minuto desde las 06:00 a 24:00 (1080 min).
 
-Reglas clave del enunciado (resumen):
-- Arribos: en cada minuto aparece un avión a 100 mn con probabilidad lambda_ (Bernoulli)
-- Velocidades por banda de distancia (nudos): 
-  >100 mn: 300–500 (usamos 500 como "máx despejado")
-  100–50: 250–300 (usamos 300 como máx)
-  50–15: 200–250 (usamos 250 como máx)
-  15–5: 150–200 (usamos 200 como máx)
-  5–0: 120–150 (usamos 150 como máx)
-- Separación mínima entre aterrizajes: 4 min; objetivo operativo: 5 min de gap (buffer).
-- Si un avión queda a <4 min del anterior, reduce su velocidad en 20 kt vs el de adelante hasta lograr ≥5 min de separación.
-- Si la reducción empuja por debajo del mínimo permitido de su banda, hace go-around: vira 180° y se aleja a 200 kt;
-  idealmente, debe reinsertarse cuando encuentre un hueco ≥10 min y esté a >5 mn del umbral.
-  (En esta versión inicial implementamos una estrategia simple de rejoin; puede refinarse.)
-
-Extensiones (hooks ya previstos en el código):
+A tener en cuenta para los últimos ejercicios:
 - Día ventoso: cada avión tiene prob 0.1 de necesitar interrupción (go-around). 
 - Cierre sorpresivo de 30 min: los aterrizajes quedan bloqueados durante la ventana.
 """
@@ -44,7 +30,7 @@ KT_TO_KMPH = 1.852
 # ---------------------------
 OPERATION_MINUTES = 18 * 60  # 6:00 a 24:00
 RUNWAY_SEP_MIN = 4           # separación mínima en minutos
-RUNWAY_TARGET_GAP = 5        # objetivo operativo (buffer)
+RUNWAY_TARGET_GAP = 5        # buffer de distancia temporal en minutos
 REJOIN_REQUIRED_GAP = 10     # gap requerido para reinsertarse tras go-around
 GO_AROUND_SPEED_KT = 200     # velocidad durante alejamiento
 MIN_REJOIN_DISTANCE_NM = 5   # para reinsertarse, estar > 5 mn de AEP
@@ -53,7 +39,7 @@ DIVERT_DISTANCE_NM = 110     # si supera esta distancia en nm, se desvía
 CLOSURE_FORCE_GO_AROUND_DISTANCE_NM = 10  # durante cierre, forzar go-around dentro de este radio
 
 # Bandas de distancia y velocidades (min, max) en nudos
-# Usamos los máximos como "desired speed" en camino despejado.
+# Usamos los máximos como "velocidad deseada" en camino despejado.
 DIST_BANDS = [
     (100, np.inf, 300, 500),  # >100 mn
     (50, 100, 250, 300),
@@ -66,7 +52,7 @@ def speed_limits_for_distance_nm(d_nm: float) -> Tuple[int, int]:
     for lo, hi, vmin, vmax in DIST_BANDS:
         if lo <= d_nm < hi:
             return vmin, vmax
-    # Si está más allá de 100 mn (fuera del radar), usamos el primer rango como proxy
+    # Si está más allá de 100 mn (fuera del radar), usamos el primer rango como sustituto.
     return DIST_BANDS[0][2], DIST_BANDS[0][3]
 
 def desired_speed_max_for_distance_nm(d_nm: float) -> int:
@@ -85,9 +71,9 @@ class Aircraft:
     landing_minute: Optional[int] = None
     go_around_count: int = 0
     diverted: bool = False
-    # Bandera para interrupciones meteo (viento)
+    # Flag para interrupciones metereológicas (viento)
     needs_interruption: bool = False
-    # Para rejoin simple
+    # Flag para rejoin simple
     rejoining: bool = False
     # Tracking adicional para control de desvíos y reintentos
     go_around_start_minute: Optional[int] = None
@@ -153,7 +139,7 @@ class AEPSimulator:
     # Lógica de separación y control de velocidades
     # ---------------------------
     def enforce_separation(self, minute: int):
-        """Ordena por distancia (más cerca primero) y ajusta velocidad de followers."""
+        """Ordena por distancia (más cerca primero) y ajusta velocidad de los siguientes aviones."""
         approaching = [a for a in self.aircrafts if a.status == "approach"]
         # Ordenar por distancia al umbral ascendente
         approaching.sort(key=lambda x: x.distance_nm)
@@ -168,16 +154,16 @@ class AEPSimulator:
             eta_lead = lead.eta_minutes()
             eta_foll = foll.eta_minutes()
 
-            # Si el follower llegaría con menos de RUNWAY_SEP_MIN detrás del líder, debe frenar
+            # Si el siguiente llegaría con menos de RUNWAY_SEP_MIN detrás del líder, debe frenar
             if eta_foll - eta_lead < RUNWAY_SEP_MIN:
-                # nueva velocidad = velocidad del líder - 20 kt, respetando mínimo de banda
+                # nueva velocidad = velocidad del líder - 20 kt, respetando buffer de distancia
                 vmin, vmax = speed_limits_for_distance_nm(foll.distance_nm)
                 target = max(vmin, lead.speed_kt - 20.0)
                 foll.speed_kt = min(target, desired)  # no superar desired
                 # Recalcular ETA con nueva velocidad
                 if foll.eta_minutes() - eta_lead < (RUNWAY_TARGET_GAP):
-                    # Sigue muy cerca: empujará más abajo del mínimo -> go-around
-                    # Regla: si target == vmin y aún no se logra el buffer, ir a go-around
+                    # Sigue muy cerca: irá más abajo del mínimo -> go-around
+                    # Regla: si target == vmin y todavía no se logra el buffer, ir a go-around
                     if foll.speed_kt <= vmin + 1e-6 and foll.status != "go_around":
                         foll.status = "go_around"
                         foll.speed_kt = GO_AROUND_SPEED_KT
@@ -202,8 +188,8 @@ class AEPSimulator:
         """
         Política simple: cuando un avión entra en go-around, se aleja (distance aumenta).
         Nueva política de reinserción:
-          - Comparar ETA del que quiere reinsertarse contra TODA la cola de approach.
-          - Requerir hueco de al menos REJOIN_REQUIRED_GAP tanto con el anterior como el siguiente.
+          - Comparar ETA del que quiere reinsertarse contra TODA la cola que está llegando.
+          - Requerimiento: hueco de al menos REJOIN_REQUIRED_GAP tanto con el anterior como el siguiente.
           - Reinsertar solo si la pista está abierta y la distancia es > MIN_REJOIN_DISTANCE_NM.
         Desvío:
           - Si supera DIVERT_DISTANCE_NM o sobrepasa MAX_GO_AROUND_TIME_MIN o excede intentos, se desvía.
@@ -221,7 +207,7 @@ class AEPSimulator:
             if a.status != "go_around":
                 continue
 
-            # Criterios de desvío por distancia/tiempo/intentros
+            # Criterios de desvío por distancia/tiempo/intentos
             too_far = a.distance_nm > DIVERT_DISTANCE_NM
             too_long = (a.go_around_start_minute is not None) and (minute - a.go_around_start_minute > MAX_GO_AROUND_TIME_MIN)
             too_many = a.go_around_attempts >= 2
@@ -237,6 +223,7 @@ class AEPSimulator:
             far_enough = a.distance_nm >= MIN_REJOIN_DISTANCE_NM
 
             ok_gap = True
+            
             # Si la pista está cerrada, bloquear reinserción
             if self.runway_closed(minute):
                 ok_gap = False
@@ -259,7 +246,6 @@ class AEPSimulator:
             if ok_gap and far_enough:
                 a.status = "approach"  # reinsertado
                 a.speed_kt = v_des
-                # no tocar go_around_start_minute; los intentos quedan registrados
 
     # ---------------------------
     # Cierre del aeropuerto (no se puede aterrizar)
@@ -290,7 +276,6 @@ class AEPSimulator:
                     a.distance_nm = max(0.0, a.distance_nm - delta_nm)
                 else:
                     # go-around: se aleja (aumenta distancia)
-                    #a.distance_nm = a.distance_nm + delta_nm
                     pass
 
         # 3b) Si la pista está cerrada, forzar go-around a los que estén cerca del umbral
@@ -322,7 +307,7 @@ class AEPSimulator:
                     a.distance_nm = max(a.distance_nm, 1.0)
                     # Dará otra vuelta en el circuito; la separación se resolverá luego
 
-        # 5) Meteo: interrupciones al azar (día ventoso)
+        # 5) Suceso meteorológico: interrupciones al azar (día ventoso)
         if self.cfg.windy_day:
             for a in self.aircrafts:
                 if a.status == "approach" and a.needs_interruption and a.distance_nm <= 8.0 and a.distance_nm > 0.0:
