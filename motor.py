@@ -1,18 +1,4 @@
 
-# aep_sim.py
-# -*- coding: utf-8 -*-
-
-"""
-Simulador AEP - TP1 ACN 2025
-
-Se basa en técnicas vistas en clase (numpy.random, Monte Carlo, visualizaciones con matplotlib).
-Modelo discreto en pasos de 1 minuto desde las 06:00 a 24:00 (1080 min).
-
-A tener en cuenta para los últimos ejercicios:
-- Día ventoso: cada avión tiene prob 0.1 de necesitar interrupción (go-around). 
-- Cierre sorpresivo de 30 min: los aterrizajes quedan bloqueados durante la ventana.
-"""
-
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 import numpy as np
