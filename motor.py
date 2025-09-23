@@ -79,6 +79,9 @@ class SimulationConfig:
     closure_window: Optional[Tuple[int,int]] = None  # (t_start, t_end) minutos donde no se puede aterrizar
     seed: Optional[int] = None
     duration_minutes: int = OPERATION_MINUTES
+    # NUEVO: tracing
+    trace_all: bool = False
+    trace_ids: Optional[List[int]] = None
 
 @dataclass
 class SimulationResult:
@@ -90,6 +93,8 @@ class SimulationResult:
     timeline_landings: List[int]  # minutos de aterrizaje
     aircraft_log: List[Aircraft]  # estado final de cada avión
     congestion_time: int = 0
+    # NUEVO: trazas por avión
+    traces: Dict[int, List[Dict]] = field(default_factory=dict)
 
 class AEPSimulator:
     def __init__(self, config: SimulationConfig):
@@ -106,6 +111,10 @@ class AEPSimulator:
         self.go_around_events = 0
         self.congestion_time = 0
 
+        # NUEVO: estado de tracing
+        self._trace_all = bool(getattr(config, "trace_all", False))
+        self._trace_ids = set(getattr(config, "trace_ids", []) or [])
+        self._traces: Dict[int, List[Dict]] = {}
     # ---------------------------
     # Proceso de arribos (Bernoulli por minuto)
     # ---------------------------
@@ -263,7 +272,8 @@ class AEPSimulator:
                     while remaining > 1e-9 and a.distance_nm > 0.0:
                         # velocidad según banda actual
                         vmin, vmax = speed_limits_for_distance_nm(a.distance_nm)
-                        v = min(a.speed_kt, vmax)
+                        #v = min(a.speed_kt, vmax)
+                        v = max(vmin, min(a.speed_kt, vmax))  # clamp explícito
                         nm_per_min = v / 60.0
 
                         # próximo borde de banda o 0 nm
@@ -285,8 +295,8 @@ class AEPSimulator:
                         remaining -= dt
                 else:
                     # go-around: se aleja
-                    a.distance_nm += delta_nm
-
+                    #a.distance_nm += delta_nm
+                    a.distance_nm += a.speed_kt / 60.0
 
         # 3b) Si la pista está cerrada, forzar go-around a los que estén cerca del umbral
         if self.runway_closed(minute):
@@ -347,6 +357,24 @@ class AEPSimulator:
         if congested:
             self.congestion_time += 1
 
+        # NUEVO: snapshot de trazas al final del minuto
+        self._trace_snapshot(minute)
+
+    def _trace_snapshot(self, minute: int):
+        if not (self._trace_all or self._trace_ids):
+            return
+        closed = self.runway_closed(minute)
+        for a in self.aircrafts:
+            if self._trace_all or (a.id in self._trace_ids):
+                self._traces.setdefault(a.id, []).append({
+                    "minute": int(minute),
+                    "distance_nm": float(a.distance_nm),
+                    "speed_kt": float(a.speed_kt),
+                    "status": a.status,
+                    "eta_min": float(a.eta_minutes()),
+                    "runway_closed": bool(closed),
+                    "landing_minute": (int(a.landing_minute) if a.landing_minute is not None else None),
+                })
     # ---------------------------
     # Correr la simulación completa
     # ---------------------------
@@ -361,7 +389,7 @@ class AEPSimulator:
         delays = []
         for a in landed_aircrafts:
             # "Retardo" vs. trayectoria despejada: estimamos como (landing_minute - spawn_minute) - T_min_clear
-            # T_min_clear ~ 23.4 min (de 100 nm a 0 siguiendo velocidades máximas). Calculamos en función de bandas.
+            # T_min_clear ~ 23 min (de 100 nm a 0 siguiendo velocidades máximas). Calculamos en función de bandas.
             ideal = ideal_time_minutes()
             delays.append((a.landing_minute - a.spawn_minute) - ideal)
 
@@ -412,13 +440,21 @@ def run_batch(lambdas, reps=50, seed=None, windy_day=False, closure_window=None,
             if out.delays:
                 delays.append(np.mean(out.delays))
             else:
-                delays.append(0.0)
-        def mean(x): return float(np.mean(x))
-        def stderr(x): return float(np.std(x, ddof=1)/np.sqrt(len(x))) if len(x)>1 else 0.0
+                delays.append(np.nan)
+
+        def mean_nan(x):
+            x = np.asarray(x, dtype=float)
+            return float(np.nanmean(x)) if np.any(~np.isnan(x)) else float('nan')
+
+        def stderr_nan(x):
+            x = np.asarray(x, dtype=float)
+            x = x[~np.isnan(x)]
+            return float(np.std(x, ddof=1)/np.sqrt(len(x))) if len(x) > 1 else float('nan')
+
         results[lam] = {
-            "landed_mean": mean(landed), "landed_se": stderr(landed),
-            "diverted_mean": mean(diverted), "diverted_se": stderr(diverted),
-            "avg_delay_mean": mean(delays), "avg_delay_se": stderr(delays),
-            "go_around_mean": mean(goas), "go_around_se": stderr(goas),
+            "landed_mean": float(np.mean(landed)), "landed_se": float(np.std(landed, ddof=1)/np.sqrt(len(landed))) if len(landed)>1 else 0.0,
+            "diverted_mean": float(np.mean(diverted)), "diverted_se": float(np.std(diverted, ddof=1)/np.sqrt(len(diverted))) if len(diverted)>1 else 0.0,
+            "avg_delay_mean": mean_nan(delays), "avg_delay_se": stderr_nan(delays),
+            "go_around_mean": float(np.mean(goas)), "go_around_se": float(np.std(goas, ddof=1)/np.sqrt(len(goas))) if len(goas)>1 else 0.0,
         }
     return results
