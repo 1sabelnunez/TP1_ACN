@@ -78,6 +78,7 @@ class SimulationConfig:
     windy_day: bool = False             # si es True, cada avión tiene 0.1 de interrupción (go-around)
     closure_window: Optional[Tuple[int,int]] = None  # (t_start, t_end) minutos donde no se puede aterrizar
     seed: Optional[int] = None
+    duration_minutes: int = OPERATION_MINUTES
 
 @dataclass
 class SimulationResult:
@@ -324,7 +325,7 @@ class AEPSimulator:
     # Correr la simulación completa
     # ---------------------------
     def run(self) -> SimulationResult:
-        for minute in range(OPERATION_MINUTES):
+        for minute in range(self.cfg.duration_minutes):
             self.step(minute)
 
         # Métricas
@@ -367,7 +368,7 @@ def ideal_time_minutes() -> float:
 # ---------------------------
 # Experimentos Monte Carlo por batch
 # ---------------------------
-def run_batch(lambdas, reps=50, seed=None, windy_day=False, closure_window=None):
+def run_batch(lambdas, reps=50, seed=None, windy_day=False, closure_window=None, duration_minutes=OPERATION_MINUTES):
     """
     Corre simulaciones para cada lambda y devuelve métricas promedio y errores estándar.
     """
