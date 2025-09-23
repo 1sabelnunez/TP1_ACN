@@ -380,7 +380,7 @@ class AEPSimulator:
 # ---------------------------
 # Utilidades: tiempo ideal desde 100 nm a 0
 # ---------------------------
-def ideal_time_minutes() -> float:
+def ideal_time_minutes() -> int:
     """
     Tiempo ~23.4 min usando velocidades máximas por banda:
       100-50 nm @ 300 kt -> 50/300 h = 0.1667 h = 10.0 min
@@ -389,7 +389,7 @@ def ideal_time_minutes() -> float:
       5-0    nm @ 150 kt -> 5/150  h = 0.0333 h = 2.0  min
       Total ≈ 23.4 min
     """
-    return 10.0 + 8.4 + 3.0 + 2.0
+    return int(10.0 + 8.4 + 3.0 + 2.0)
 
 # ---------------------------
 # Experimentos Monte Carlo por batch
