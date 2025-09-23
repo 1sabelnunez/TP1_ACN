@@ -27,7 +27,7 @@ CLOSURE_FORCE_GO_AROUND_DISTANCE_NM = 10  # durante cierre, forzar go-around den
 # Bandas de distancia y velocidades (min, max) en nudos
 # Usamos los máximos como "velocidad deseada" en camino despejado.
 DIST_BANDS = [
-    (100, np.inf, 300, 500),  # >100 mn
+    (101, np.inf, 300, 500),  # >100 mn
     (50, 100, 250, 300),
     (15, 50, 200, 250),
     (5, 15, 150, 200),
@@ -36,7 +36,7 @@ DIST_BANDS = [
 
 def speed_limits_for_distance_nm(d_nm: float) -> Tuple[int, int]:
     for lo, hi, vmin, vmax in DIST_BANDS:
-        if lo <= d_nm < hi:
+        if lo <= d_nm <= hi:
             return vmin, vmax
     # Si está más allá de 100 mn (fuera del radar), usamos el primer rango como sustituto.
     return DIST_BANDS[0][2], DIST_BANDS[0][3]
@@ -259,11 +259,34 @@ class AEPSimulator:
                 hours = 1.0/60.0
                 delta_nm = a.speed_kt * hours
                 if a.status == "approach":
-                    # se acerca (disminuye distancia)
-                    a.distance_nm = max(0.0, a.distance_nm - delta_nm)
+                    remaining = 1.0  # minuto actual
+                    while remaining > 1e-9 and a.distance_nm > 0.0:
+                        # velocidad según banda actual
+                        vmin, vmax = speed_limits_for_distance_nm(a.distance_nm)
+                        v = min(a.speed_kt, vmax)
+                        nm_per_min = v / 60.0
+
+                        # próximo borde de banda o 0 nm
+                        if a.distance_nm > 50: 
+                            next_edge = 50.0
+                        elif a.distance_nm > 15: 
+                            next_edge = 15.0
+                        elif a.distance_nm > 5:  
+                            next_edge = 5.0
+                        else:                    
+                            next_edge = 0.0
+
+                        dist_to_edge = max(0.0, a.distance_nm - next_edge)
+                        t_to_edge = dist_to_edge / nm_per_min if nm_per_min > 0 else np.inf
+
+                        # paso efectivo en este minuto
+                        dt = min(remaining, t_to_edge)
+                        a.distance_nm = max(0.0, a.distance_nm - nm_per_min * dt)
+                        remaining -= dt
                 else:
-                    # go-around: se aleja (aumenta distancia)
-                    pass
+                    # go-around: se aleja
+                    a.distance_nm += delta_nm
+
 
         # 3b) Si la pista está cerrada, forzar go-around a los que estén cerca del umbral
         if self.runway_closed(minute):
@@ -284,11 +307,14 @@ class AEPSimulator:
             approaching.sort(key=lambda x: x.spawn_minute)
             for a in approaching:
                 # Chequear separación temporal vs último aterrizaje
+
                 if (self.last_landing_minute is None) or (minute - self.last_landing_minute >= RUNWAY_SEP_MIN):
+                    # >>> cambio clave: timbrar al minuto siguiente <<<
+                    t_land = minute + 1
                     a.status = "landed"
-                    a.landing_minute = minute
-                    self.timeline_landings.append(minute)
-                    self.last_landing_minute = minute
+                    a.landing_minute = t_land
+                    self.timeline_landings.append(t_land)
+                    self.last_landing_minute = t_land
                 else:
                     # No puede aterrizar: vuelve a approach con +dist (simula "round out" corto)
                     a.distance_nm = max(a.distance_nm, 1.0)
