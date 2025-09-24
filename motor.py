@@ -446,7 +446,7 @@ def run_batch(lambdas, reps=50, seed=None, windy_day=False, closure_window=None,
     for lam in lambdas:
         landed, diverted, delays, goas = [], [], [], []
         for r in range(reps):
-            cfg = SimulationConfig(lambda_per_min=lam, windy_day=windy_day, closure_window=closure_window, seed=int(rng.integers(0, 1e9)))
+            cfg = SimulationConfig(lambda_per_min=lam, windy_day=windy_day, closure_window=closure_window, seed=int(rng.integers(0, 1e9)), duration_minutes=int(duration_minutes))
             sim = AEPSimulator(cfg)
             out = sim.run()
             landed.append(out.landed)
