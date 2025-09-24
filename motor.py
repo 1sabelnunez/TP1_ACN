@@ -36,7 +36,7 @@ DIST_BANDS = [
 
 def speed_limits_for_distance_nm(d_nm: float) -> Tuple[int, int]:
     for lo, hi, vmin, vmax in DIST_BANDS:
-        if lo <= d_nm <= hi:
+        if lo < d_nm <= hi:
             return vmin, vmax
     # Si está más allá de 100 mn (fuera del radar), usamos el primer rango como sustituto.
     return DIST_BANDS[0][2], DIST_BANDS[0][3]
@@ -66,11 +66,11 @@ class Aircraft:
     go_around_attempts: int = 0
 
     def eta_minutes(self) -> float:
-        """ETA al umbral asumiendo mantener speed_kt constante. (Aproximado)"""
+        """ETA a la pista mantener speed_kt constante. (Aproximado)"""
         if self.speed_kt <= 0:
             return np.inf
         hours = self.distance_nm / self.speed_kt
-        return hours * 60.0
+        return hours * 60.0 #convertimos a minutos
 
 @dataclass
 class SimulationConfig:
@@ -402,7 +402,9 @@ class AEPSimulator:
             go_arounds=self.go_around_events,
             timeline_landings=self.timeline_landings,
             aircraft_log=self.aircrafts,
-            congestion_time=self.congestion_time
+            congestion_time=self.congestion_time,
+
+            traces=self._traces  # <-- AGREGAR ESTA LÍNEA
         )
 
 # ---------------------------
