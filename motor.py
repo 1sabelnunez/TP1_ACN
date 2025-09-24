@@ -152,7 +152,7 @@ class AEPSimulator:
                 continue
 
             lead = approaching[i-1]
-            gap = foll.eta_minutes() - lead.eta_minutes()  # minutos
+            gap = foll.eta_minutes() - lead.eta_minutes()  # en minutos
 
             if gap >= RUNWAY_SEP_MIN:
                 # Con 4 min o más puede ir a máxima de su banda
