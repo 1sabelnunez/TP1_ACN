@@ -135,47 +135,42 @@ class AEPSimulator:
     # Lógica de separación y control de velocidades
     # ---------------------------
     def enforce_separation(self, minute: int):
-        """Ordena por distancia (más cerca primero) y ajusta velocidad de los siguientes aviones."""
+        """Control por gap temporal con el líder inmediato."""
         approaching = [a for a in self.aircrafts if a.status == "approach"]
-        # Ordenar por distancia al umbral ascendente
         approaching.sort(key=lambda x: x.distance_nm)
-        for i in range(1, len(approaching)):
-            lead = approaching[i-1]
-            foll = approaching[i]
 
-            # Velocidad deseada por banda (máxima)
+        for i, foll in enumerate(approaching):
+            vmin, vmax = speed_limits_for_distance_nm(foll.distance_nm)
             desired = desired_speed_max_for_distance_nm(foll.distance_nm)
 
-            # ETA actuales (minutos) si mantuvieran la velocidad
-            eta_lead = lead.eta_minutes()
-            eta_foll = foll.eta_minutes()
-
-            # Si el siguiente llegaría con menos de RUNWAY_SEP_MIN detrás del líder, debe frenar
-            if eta_foll - eta_lead < RUNWAY_SEP_MIN:
-                # nueva velocidad = velocidad del líder - 20 kt, respetando buffer de distancia
-                vmin, vmax = speed_limits_for_distance_nm(foll.distance_nm)
-                target = max(vmin, lead.speed_kt - 20.0)
-                foll.speed_kt = min(target, desired)  # no superar desired
-                # Recalcular ETA con nueva velocidad
-                if foll.eta_minutes() - eta_lead < (RUNWAY_TARGET_GAP):
-                    # Sigue muy cerca: irá más abajo del mínimo -> go-around
-                    # Regla: si target == vmin y todavía no se logra el buffer, ir a go-around
-                    if foll.speed_kt <= vmin + 1e-6 and foll.status != "go_around":
-                        foll.status = "go_around"
-                        foll.speed_kt = GO_AROUND_SPEED_KT
-                        if foll.go_around_start_minute is None:
-                            foll.go_around_start_minute = minute
-                        foll.go_around_attempts += 1
-                        self.go_around_events += 1
-
-            else:
-                # Camino despejado: usa desired speed
+            if i == 0:
+                # El más cercano va a su velocidad deseada (máxima por banda)
                 foll.speed_kt = desired
+                continue
 
-        # El líder usa su deseado
-        if approaching:
-            lead0 = approaching[0]
-            lead0.speed_kt = desired_speed_max_for_distance_nm(lead0.distance_nm)
+            lead = approaching[i-1]
+            gap = foll.eta_minutes() - lead.eta_minutes()  # minutos
+
+            if gap >= RUNWAY_SEP_MIN:
+                # Con 4 min o más puede ir a máxima de su banda
+                foll.speed_kt = desired
+                continue
+
+            # Gap < 4 min: bajar 20 kt respecto a SU velocidad actual (no la del líder)
+            target = foll.speed_kt - 20.0
+            target = max(target, vmin)        # no bajar del mínimo permitido por banda
+            target = min(target, desired)     # no superar la máxima deseada por banda
+            foll.speed_kt = target
+
+            # Si con vmin no alcanzamos el buffer de 5 min, hace go-around
+            new_gap = foll.eta_minutes() - lead.eta_minutes()
+            if new_gap < RUNWAY_TARGET_GAP and foll.speed_kt <= vmin + 1e-6 and foll.status != "go_around":
+                foll.status = "go_around"
+                foll.speed_kt = GO_AROUND_SPEED_KT
+                if getattr(foll, "go_around_start_minute", None) is None:
+                    foll.go_around_start_minute = minute
+                foll.go_around_attempts += 1
+                self.go_around_events += 1
 
     # ---------------------------
     # Go-around simple y reinserción
