@@ -64,6 +64,9 @@ class Aircraft:
     # Tracking adicional para control de desvíos y reintentos
     go_around_start_minute: Optional[int] = None
     go_around_attempts: int = 0
+    # Tiempos continuos (para medir delays no cuantizados)
+    landing_time_min: Optional[float] = None           # tiempo fraccional real de aterrizaje
+    cross_frac_in_minute: Optional[float] = None       # fracción [0,1] del minuto en que cruzó 0 nm
 
     def eta_minutes(self) -> float:
         """ETA a la pista mantener speed_kt constante. (Aproximado)"""
@@ -264,6 +267,8 @@ class AEPSimulator:
                 delta_nm = a.speed_kt * hours
                 if a.status == "approach":
                     remaining = 1.0  # minuto actual
+                    # limpiar cruce previo; se recalcula cada minuto
+                    a.cross_frac_in_minute = None
                     while remaining > 1e-9 and a.distance_nm > 0.0:
                         # velocidad según banda actual
                         vmin, vmax = speed_limits_for_distance_nm(a.distance_nm)
@@ -283,6 +288,13 @@ class AEPSimulator:
 
                         dist_to_edge = max(0.0, a.distance_nm - next_edge)
                         t_to_edge = dist_to_edge / nm_per_min if nm_per_min > 0 else np.inf
+
+                        # Si va a cruzar el umbral dentro del minuto, registrar fracción exacta
+                        if next_edge == 0.0 and t_to_edge <= remaining:
+                            a.cross_frac_in_minute = 1.0 - remaining + t_to_edge
+                            a.distance_nm = 0.0
+                            remaining -= t_to_edge
+                            break
 
                         # paso efectivo en este minuto
                         dt = min(remaining, t_to_edge)
@@ -312,17 +324,21 @@ class AEPSimulator:
             approaching.sort(key=lambda x: x.spawn_minute)
             for a in approaching:
                 # Chequear separación temporal vs último aterrizaje
-
-                if (self.last_landing_minute is None) or (minute - self.last_landing_minute >= RUNWAY_SEP_MIN):
+                # Ojo: como timbramos aterrizaje en minute+1, comparar contra (minute+1)
+                if (self.last_landing_minute is None) or ((minute + 1) - self.last_landing_minute >= RUNWAY_SEP_MIN):
                     # >>> cambio clave: timbrar al minuto siguiente <<<
                     t_land = minute + 1
                     a.status = "landed"
                     a.landing_minute = t_land
+                    # tiempo fraccional real del cruce (fallback al fin del minuto)
+                    frac = a.cross_frac_in_minute if a.cross_frac_in_minute is not None else 1.0
+                    a.landing_time_min = float(minute + frac)
                     self.timeline_landings.append(t_land)
                     self.last_landing_minute = t_land
                 else:
                     # No puede aterrizar: vuelve a approach con +dist (simula "round out" corto)
                     a.distance_nm = max(a.distance_nm, 1.0)
+                    a.cross_frac_in_minute = None
                     # Dará otra vuelta en el circuito; la separación se resolverá luego
 
         # 5) Suceso meteorológico: interrupciones al azar (día ventoso)
@@ -369,6 +385,7 @@ class AEPSimulator:
                     "eta_min": float(a.eta_minutes()),
                     "runway_closed": bool(closed),
                     "landing_minute": (int(a.landing_minute) if a.landing_minute is not None else None),
+                    "landing_time_min": (float(a.landing_time_min) if a.landing_time_min is not None else None),
                 })
     # ---------------------------
     # Correr la simulación completa
@@ -382,11 +399,11 @@ class AEPSimulator:
         landed = len(landed_aircrafts)
         diverted = self.diverted_count
         delays = []
+        ideal_cont = ideal_time_minutes_continuous()
         for a in landed_aircrafts:
-            # "Retardo" vs. trayectoria despejada: estimamos como (landing_minute - spawn_minute) - T_min_clear
-            # T_min_clear ~ 23 min (de 100 nm a 0 siguiendo velocidades máximas). Calculamos en función de bandas.
-            ideal = ideal_time_minutes()
-            delays.append((a.landing_minute - a.spawn_minute) - ideal)
+            # Usar tiempo fraccional si está disponible
+            t_real = a.landing_time_min if a.landing_time_min is not None else float(a.landing_minute)
+            delays.append((t_real - a.spawn_minute) - ideal_cont)
 
         avg_delay = float(np.mean(delays)) if delays else 0.0
         return SimulationResult(
@@ -405,16 +422,17 @@ class AEPSimulator:
 # ---------------------------
 # Utilidades: tiempo ideal desde 100 nm a 0
 # ---------------------------
-def ideal_time_minutes() -> int:
+def ideal_time_minutes_continuous() -> float:
     """
-    Tiempo ~23.4 min usando velocidades máximas por banda:
-      100-50 nm @ 300 kt -> 50/300 h = 0.1667 h = 10.0 min
-      50-15  nm @ 250 kt -> 35/250 h = 0.14   h = 8.4  min
-      15-5   nm @ 200 kt -> 10/200 h = 0.05   h = 3.0  min
-      5-0    nm @ 150 kt -> 5/150  h = 0.0333 h = 2.0  min
-      Total ≈ 23.4 min
+    Tiempo ideal continuo (~23.4 min) usando velocidades máximas por banda,
+    sin redondear a minutos enteros.
     """
-    return int(10.0 + 8.4 + 3.0 + 2.0)
+    return 10.0 + 8.4 + 3.0 + 2.0
+
+# Compatibilidad: alias conservando nombre anterior
+def ideal_time_minutes() -> float:
+    """Compat: retorna el tiempo ideal continuo (23.4)."""
+    return ideal_time_minutes_continuous()
 
 # ---------------------------
 # Experimentos Monte Carlo por batch
