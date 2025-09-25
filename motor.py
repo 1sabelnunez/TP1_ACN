@@ -49,7 +49,7 @@ def desired_speed_max_for_distance_nm(d_nm: float) -> int:
 class Aircraft:
     id: int
     # Estado cinemático
-    distance_nm: float = 100.0   # distancia al umbral (comienza en 100 nm al aparecer)
+    distance_nm: float = 100.0   # distancia a la pista (comienza en 100 nm al aparecer)
     speed_kt: float = 500.0      # velocidad actual (se ajusta por banda)
     status: str = "approach"     # approach | go_around | diverted | landed
     # Métricas/registro
@@ -82,10 +82,7 @@ class SimulationConfig:
     closure_window: Optional[Tuple[int,int]] = None  # (t_start, t_end) minutos donde no se puede aterrizar
     seed: Optional[int] = None
     duration_minutes: int = OPERATION_MINUTES
-    # NUEVO: tracing
-    trace_all: bool = False
-    trace_ids: Optional[List[int]] = None
-
+   
 @dataclass
 class SimulationResult:
     landed: int
@@ -96,8 +93,6 @@ class SimulationResult:
     timeline_landings: List[int]  # minutos de aterrizaje
     aircraft_log: List[Aircraft]  # estado final de cada avión
     congestion_time: int = 0
-    # NUEVO: trazas por avión
-    traces: Dict[int, List[Dict]] = field(default_factory=dict)
 
 class AEPSimulator:
     def __init__(self, config: SimulationConfig):
@@ -114,10 +109,6 @@ class AEPSimulator:
         self.go_around_events = 0
         self.congestion_time = 0
 
-        # NUEVO: estado de tracing
-        self._trace_all = bool(getattr(config, "trace_all", False))
-        self._trace_ids = set(getattr(config, "trace_ids", []) or [])
-        self._traces: Dict[int, List[Dict]] = {}
     # ---------------------------
     # Proceso de arribos (Bernoulli por minuto)
     # ---------------------------
@@ -302,7 +293,6 @@ class AEPSimulator:
                         remaining -= dt
                 else:
                     # go-around: se aleja
-                    #a.distance_nm += delta_nm
                     a.distance_nm += a.speed_kt / 60.0
 
         # 3b) Si la pista está cerrada, forzar go-around a los que estén cerca del umbral
@@ -368,25 +358,6 @@ class AEPSimulator:
         if congested:
             self.congestion_time += 1
 
-        # NUEVO: snapshot de trazas al final del minuto
-        self._trace_snapshot(minute)
-
-    def _trace_snapshot(self, minute: int):
-        if not (self._trace_all or self._trace_ids):
-            return
-        closed = self.runway_closed(minute)
-        for a in self.aircrafts:
-            if self._trace_all or (a.id in self._trace_ids):
-                self._traces.setdefault(a.id, []).append({
-                    "minute": int(minute),
-                    "distance_nm": float(a.distance_nm),
-                    "speed_kt": float(a.speed_kt),
-                    "status": a.status,
-                    "eta_min": float(a.eta_minutes()),
-                    "runway_closed": bool(closed),
-                    "landing_minute": (int(a.landing_minute) if a.landing_minute is not None else None),
-                    "landing_time_min": (float(a.landing_time_min) if a.landing_time_min is not None else None),
-                })
     # ---------------------------
     # Correr la simulación completa
     # ---------------------------
@@ -414,9 +385,7 @@ class AEPSimulator:
             go_arounds=self.go_around_events,
             timeline_landings=self.timeline_landings,
             aircraft_log=self.aircrafts,
-            congestion_time=self.congestion_time,
-
-            traces=self._traces  # <-- AGREGAR ESTA LÍNEA
+            congestion_time=self.congestion_time
         )
 
 # ---------------------------
